@@ -1,0 +1,27 @@
+# .streamlit/config.toml
+# Streamlit configuration file
+
+[global]
+# Development settings
+developmentMode = false
+showWarningOnDirectExecution = false
+
+[server]
+# Server settings
+port = 8501
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 200
+
+[browser]
+# Browser settings
+gatherUsageStats = false
+showErrorDetails = false
+
+[theme]
+# Theme settings
+primaryColor = "#9c88ff"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2ff"
+textColor = "#262730"
+font = "sans serif"
