@@ -132,7 +132,7 @@ class RepairMateAssistant:
     def __init__(self, api_key: str):
         try:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-pro')
+            self.model = genai.GenerativeModel("gemini-2.0-flash-lite")
             self.chat = None
             self.api_configured = True
         except Exception as e:
@@ -333,7 +333,7 @@ with col1:
             st.session_state.media_type = media_type
             
             if media_type == 'image':
-                st.image(media_data, caption="Uploaded Image", use_column_width=True)
+                st.image(media_data, caption="Uploaded Image", use_container_width=True)
             elif media_type == 'video':
                 st.video(uploaded_file)
             
