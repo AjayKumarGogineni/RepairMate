@@ -74,14 +74,6 @@ st.markdown("""
         border-left-color: #51cf66;
     }
     
-    .upload-section {
-        border: 2px dashed #cccccc;
-        border-radius: 10px;
-        padding: 2rem;
-        text-align: center;
-        margin: 1rem 0;
-    }
-    
     .step-counter {
         background: #667eea;
         color: white;
@@ -100,16 +92,19 @@ st.markdown("""
         margin: 1rem 0;
     }
     
-    .config-success {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        color: #155724;
-    }
-    
     .config-error {
         background-color: #f8d7da;
         border: 1px solid #f5c6cb;
         color: #721c24;
+    }
+    
+    .chat-container {
+        height: 400px;
+        overflow-y: auto;
+        padding: 1rem;
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        background-color: #f9f9f9;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -132,19 +127,7 @@ class RepairMateAssistant:
     def __init__(self, api_key: str):
         try:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash-lite")
-            self.chat = None
-            self.api_configured = True
-        except Exception as e:
-            self.api_configured = False
-            st.error(f"❌ Error configuring Gemini API: {str(e)}")
-        
-    def start_chat(self):
-        """Initialize a new chat session"""
-        if not self.api_configured:
-            return None
-            
-        system_prompt = """You are an expert repair assistant called RepairMate AI. Your role is to help users diagnose and fix issues with their devices, appliances, or objects based on images/videos they share and their descriptions.
+            self.system_instruction = """You are an expert repair assistant called RepairMate AI. Your role is to help users diagnose and fix issues with their devices, appliances, or objects based on images/videos they share and their descriptions.
 
 Guidelines for your responses:
 1. Always be helpful, clear, and safety-conscious
@@ -157,9 +140,25 @@ Guidelines for your responses:
 8. Provide alternative solutions when possible
 9. Include difficulty level (Easy/Medium/Hard) for each repair step
 
-Start by analyzing any media provided and asking clarifying questions about the problem."""
+Start by analyzing any media provided and asking clarifying questions about the problem. Get relevant information such as device type, model number if relevant, recent repairs, and symptoms. Then guide the user through diagnosing and fixing the issue step-by-step."""
+            
+            self.model = genai.GenerativeModel(
+                "gemini-2.0-flash-lite",
+                system_instruction=self.system_instruction
+            )
+            self.chat = None
+            self.api_configured = True
+        except Exception as e:
+            self.api_configured = False
+            st.error(f"❌ Error configuring Gemini API: {str(e)}")
         
+    def start_chat(self):
+        """Initialize a new chat session"""
+        if not self.api_configured:
+            return None
+            
         try:
+            # Start chat with empty history - system instruction is already in the model
             self.chat = self.model.start_chat(history=[])
             return self.chat
         except Exception as e:
@@ -172,24 +171,42 @@ Start by analyzing any media provided and asking clarifying questions about the 
             return "❌ API not configured properly. Please check your API key."
             
         try:
-            if media_data and self.chat:
-                response = self.chat.send_message([message, media_data])
-            elif self.chat:
-                response = self.chat.send_message(message)
-            else:
-                # First message with media
+            # Initialize chat if not already started
+            if self.chat is None:
                 self.start_chat()
                 if not self.chat:
                     return "❌ Failed to start chat session."
-                    
-                if media_data:
-                    response = self.chat.send_message([message, media_data])
-                else:
-                    response = self.chat.send_message(message)
+            
+            # Prepare message content
+            content = []
+            if media_data:
+                content.append(media_data)
+            content.append(message)
+            
+            # Send message
+            if len(content) > 1:
+                response = self.chat.send_message(content)
+            else:
+                response = self.chat.send_message(message)
             
             return response.text
+            
         except Exception as e:
-            return f"❌ Error: {str(e)}. Please check your API key and try again."
+            error_msg = str(e)
+            if "400" in error_msg or "role" in error_msg.lower():
+                # Try to restart the chat session
+                try:
+                    self.chat = None
+                    self.start_chat()
+                    if self.chat:
+                        if media_data:
+                            response = self.chat.send_message([media_data, message])
+                        else:
+                            response = self.chat.send_message(message)
+                        return response.text
+                except:
+                    pass
+            return f"❌ Error: {error_msg}. Please try again or check your API key."
 
 def process_uploaded_file(uploaded_file, config):
     """Process uploaded image or video file"""
@@ -217,6 +234,11 @@ def process_uploaded_file(uploaded_file, config):
             # Create a video file object for Gemini
             video_file = genai.upload_file(path=tfile.name)
             
+            # Wait for video processing
+            while video_file.state.name == "PROCESSING":
+                time.sleep(1)
+                video_file = genai.get_file(video_file.name)
+            
             # Clean up temp file
             os.unlink(tfile.name)
             
@@ -238,82 +260,44 @@ st.markdown(f"""
 # Check if API key is configured
 api_configured = bool(config['api_key'])
 
-if api_configured:
-    st.markdown("""
-    <div class="config-status config-success">
-        ✅ <strong>API Configuration:</strong> Gemini API key loaded from secrets
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Initialize assistant if not already done
-    if st.session_state.assistant is None:
-        st.session_state.assistant = RepairMateAssistant(config['api_key'])
-else:
+if not api_configured:
     st.markdown("""
     <div class="config-status config-error">
         ❌ <strong>API Configuration:</strong> Gemini API key not found in secrets.toml
     </div>
     """, unsafe_allow_html=True)
 
+# Initialize assistant if not already done
+if api_configured and st.session_state.assistant is None:
+    st.session_state.assistant = RepairMateAssistant(config['api_key'])
+
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    # st.header("⚙️ Configuration")
     
-    # API Status
-    if api_configured:
-        st.success("✅ API Key: Configured via secrets")
-    else:
-        st.error("❌ API Key: Not configured")
-        st.info("💡 Add your Gemini API key to `.streamlit/secrets.toml`")
+    # # API Status
+    # if api_configured:
+    #     st.success("✅ API Key: Configured via secrets")
+    # else:
+    #     st.error("❌ API Key: Not configured")
+    #     st.info("💡 Add your Gemini API key to `.streamlit/secrets.toml`")
     
-    # Manual API key override (for development)
-    with st.expander("🔧 Developer Override"):
-        manual_api_key = st.text_input(
-            "Manual API Key",
-            type="password",
-            help="Override secrets.toml API key for development"
-        )
+    # # Manual API key override (for development)
+    # with st.expander("🔧 Developer Override"):
+    #     manual_api_key = st.text_input(
+    #         "Manual API Key",
+    #         type="password",
+    #         help="Override secrets.toml API key for development"
+    #     )
         
-        if manual_api_key:
-            st.session_state.assistant = RepairMateAssistant(manual_api_key)
-            st.success("✅ Manual API Key configured!")
-            api_configured = True
+    #     if manual_api_key:
+    #         st.session_state.assistant = RepairMateAssistant(manual_api_key)
+    #         st.success("✅ Manual API Key configured!")
+    #         api_configured = True
     
-    st.markdown("---")
-    st.header("📋 How it works")
-    st.markdown("""
-    <div style="font-size: 14px;">
-    <p><span class="step-counter">1</span>Upload image/video</p>
-    <p><span class="step-counter">2</span>Describe the problem</p>
-    <p><span class="step-counter">3</span>Get AI analysis</p>
-    <p><span class="step-counter">4</span>Follow repair steps</p>
-    <p><span class="step-counter">5</span>Ask follow-up questions</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # st.markdown("---")
     
-    # App configuration display
-    with st.expander("🔍 App Configuration"):
-        st.json({
-            "max_file_size_mb": config['max_file_size'],
-            "image_formats": config['supported_image_formats'],
-            "video_formats": config['supported_video_formats'],
-            "theme": config['theme']
-        })
-    
-    if st.button("🔄 Start New Session"):
-        st.session_state.chat_history = []
-        st.session_state.uploaded_media = None
-        st.session_state.media_type = None
-        st.session_state.conversation_started = False
-        st.session_state.user_input = ""
-        if st.session_state.assistant:
-            st.session_state.assistant.chat = None
-        st.rerun()
-
-# Main content area
-col1, col2 = st.columns([1, 2])
-
-with col1:
+    # Upload Media Section in Sidebar
     st.header("📤 Upload Media")
     
     # Create list of supported formats
@@ -337,53 +321,63 @@ with col1:
             elif media_type == 'video':
                 st.video(uploaded_file)
             
-            st.success(f"✅ {media_type.title()} uploaded successfully!")
+            st.success(f"✅ {media_type.title()} uploaded!")
             
             # Display file info
             file_size = len(uploaded_file.getvalue()) / (1024 * 1024)
-            st.info(f"📊 File size: {file_size:.1f}MB")
+            st.info(f"📊 Size: {file_size:.1f}MB")
+    
+    st.markdown("---")
+    
+    if st.button("🔄 Start New Session"):
+        st.session_state.chat_history = []
+        st.session_state.uploaded_media = None
+        st.session_state.media_type = None
+        st.session_state.conversation_started = False
+        st.session_state.user_input = ""
+        if st.session_state.assistant:
+            st.session_state.assistant.chat = None
+        st.rerun()
 
-with col2:
-    st.header("💬 Repair Assistant Chat")
-    
-    # Display chat history
+# Main Chat Area
+st.header("💬 Repair Assistant Chat")
+
+# Display chat history in a scrollable container
+with st.container():
     chat_container = st.container()
-    
+
     with chat_container:
-        for i, message in enumerate(st.session_state.chat_history):
-            if message['role'] == 'user':
-                st.markdown(f"""
-                <div class="chat-message user-message">
-                    <strong>🙋‍♂️ You:</strong><br>
-                    {message['content']}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="chat-message assistant-message">
-                    <strong>🔧 RepairMate AI:</strong><br>
-                    {message['content']}
-                </div>
-                """, unsafe_allow_html=True)
+        if st.session_state.chat_history:
+            for i, message in enumerate(st.session_state.chat_history):
+                if message["role"] == "user":
+                    with st.chat_message("user", avatar="🙋‍♂️"):
+                        st.markdown(f"**You:**\n\n{message['content']}")
+                else:
+                    with st.chat_message("assistant", avatar="🔧"):
+                        st.markdown(f"**RepairMate AI:**\n\n{message['content']}")
+    
+    # with chat_container:
+    #     if st.session_state.chat_history:
+    #         for i, message in enumerate(st.session_state.chat_history):
+    #             if message['role'] == 'user':
+    #                 st.markdown(f"""
+    #                 <div class="chat-message user-message">
+    #                     <strong>🙋‍♂️ You:</strong><br>
+    #                     {message['content']}
+    #                 </div>
+    #                 """, unsafe_allow_html=True)
+    #             else:
+    #                 st.markdown(f"""
+    #                 <div class="chat-message assistant-message">
+    #                     <strong>🔧 RepairMate AI:</strong><br>
+    #                     {message['content']}
+    #                 </div>
+    #                 """, unsafe_allow_html=True)
+        else:
+            st.info("👋 Welcome! Upload an image/video of your broken item in the sidebar and describe the issue below to get started.")
 
 # Input section
-st.header("✍️ Describe Your Issue")
-
-# Check for example button clicks
-example_issues = [
-    "My phone screen is cracked",
-    "Laptop won't charge",
-    "Car won't start",
-    "Washing machine leaking",
-    "TV has no sound",
-    "Router keeps disconnecting"
-]
-
-# Handle example button clicks
-for i, example in enumerate(example_issues):
-    if st.session_state.get(f"example_clicked_{i}", False):
-        st.session_state.user_input = example
-        st.session_state[f"example_clicked_{i}"] = False
+st.subheader("✍️ Describe Your Issue")
 
 # Text area with session state
 user_input = st.text_area(
@@ -397,27 +391,38 @@ user_input = st.text_area(
 # Update session state with current value
 st.session_state.user_input = user_input
 
-# Quick examples
-st.subheader("💡 Quick Examples")
-col1, col2, col3 = st.columns(3)
-
-for i, example in enumerate(example_issues):
-    col_index = i % 3
-    if col_index == 0:
-        with col1:
-            if st.button(f"💡 {example}", key=f"example_{i}", use_container_width=True):
-                st.session_state.user_input = example
-                st.rerun()
-    elif col_index == 1:
-        with col2:
-            if st.button(f"💡 {example}", key=f"example_{i}", use_container_width=True):
-                st.session_state.user_input = example
-                st.rerun()
-    else:
-        with col3:
-            if st.button(f"💡 {example}", key=f"example_{i}", use_container_width=True):
-                st.session_state.user_input = example
-                st.rerun()
+# Quick examples (only show when no conversation has started)
+if not st.session_state.chat_history:
+    st.subheader("💡 Quick Examples")
+    
+    example_issues = [
+        "My phone screen is cracked",
+        "Laptop won't charge",
+        "Car won't start",
+        "Washing machine leaking",
+        "TV has no sound",
+        "Router keeps disconnecting"
+    ]
+    
+    col1, col2, col3 = st.columns(3)
+    
+    for i, example in enumerate(example_issues):
+        col_index = i % 3
+        if col_index == 0:
+            with col1:
+                if st.button(f"💡 {example}", key=f"example_{i}", use_container_width=True):
+                    st.session_state.user_input = example
+                    st.rerun()
+        elif col_index == 1:
+            with col2:
+                if st.button(f"💡 {example}", key=f"example_{i}", use_container_width=True):
+                    st.session_state.user_input = example
+                    st.rerun()
+        else:
+            with col3:
+                if st.button(f"💡 {example}", key=f"example_{i}", use_container_width=True):
+                    st.session_state.user_input = example
+                    st.rerun()
 
 # Send button
 send_button = st.button("🚀 Send Message", type="primary", use_container_width=True)
@@ -456,22 +461,13 @@ if send_button and user_input and api_configured:
         })
         
         # Clear input and rerun
-        st.session_state.user_input = ""
+        st.session_state.user_input = ''
         st.rerun()
 
 elif send_button and not api_configured:
     st.error("❌ Please configure your Gemini API key in secrets.toml!")
 elif send_button and not user_input:
     st.error("❌ Please describe your issue!")
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: gray; padding: 1rem;">
-    <p>🧙‍♂️ RepairMate - Your magical repair wizard powered by Gemini 2.5 Pro</p>
-    <p><small>Always prioritize safety. When in doubt, consult a professional repair wizard! ⚠️✨</small></p>
-</div>
-""", unsafe_allow_html=True)
 
 # Setup instructions (only show if API not configured)
 if not api_configured:
